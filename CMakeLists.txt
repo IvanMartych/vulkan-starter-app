@@ -4,6 +4,9 @@ include(FetchContent)
 project(vulkan-starter-app LANGUAGES C CXX)
 
 add_executable(${PROJECT_NAME} source/main.cpp source/graphics_internal.cpp source/application.cpp)
+target_compile_definitions(${PROJECT_NAME} PRIVATE
+    "SHADER_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/shaders\""
+)
 
 if(LINUX)
 	target_compile_options(${PROJECT_NAME} PRIVATE -Wall -Wextra -Wno-missing-field-initializers)
@@ -103,8 +106,11 @@ if(GLSLC_FOUND)
 	# To compile shader file, use compile_shader function with a file name
 	# of a shader inside shaders directory. See example below:
 
+	
 	# compile_shader(example.vert)
 	# compile_shader(example.frag)
+    compile_shader(triangle.vert)
+	compile_shader(triangle.frag)
 
 	add_custom_target(shaders DEPENDS ${_SHADER_BINARIES})
 	add_dependencies(${PROJECT_NAME} shaders)
