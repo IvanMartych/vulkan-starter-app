@@ -14,8 +14,8 @@
 
 namespace {
 
-constexpr int32_t default_window_width = 1280;
-constexpr int32_t default_window_height = 720;
+constexpr int32_t default_window_width = 1920;
+constexpr int32_t default_window_height = 1080;
 
 constexpr char default_window_title[] = "Vulkan Starter App";
 
@@ -24,6 +24,7 @@ GLFWwindow* glfw_window;
 } // namespace
 
 int main() {
+
 	int status = EXIT_SUCCESS;
 
 	if (!glfwInit()) {
@@ -79,8 +80,32 @@ int main() {
 		ImGui_ImplGlfw_NewFrame();
 
 		ImGui::NewFrame();
-		application::update(time);
-		ImGui::Render();
+
+        float camera_horizontal = 0.0f;
+        float camera_vertical = 0.0f;
+
+
+        if (!ImGui::GetIO().WantCaptureKeyboard) {
+            if (glfwGetKey(glfw_window, GLFW_KEY_A) == GLFW_PRESS) {
+                camera_horizontal -= 1.0f;
+            }
+
+            if (glfwGetKey(glfw_window, GLFW_KEY_D) == GLFW_PRESS) {
+                camera_horizontal += 1.0f;
+            }
+
+            if (glfwGetKey(glfw_window, GLFW_KEY_W) == GLFW_PRESS) {
+                camera_vertical += 1.0f;
+            }
+
+            if (glfwGetKey(glfw_window, GLFW_KEY_S) == GLFW_PRESS) {
+                camera_vertical -= 1.0f;
+            }
+        }
+
+
+        application::update(time, camera_horizontal, camera_vertical);
+        ImGui::Render();
 
 		graphics::internal::FrameData fd = graphics::internal::prepare();
 		application::render(fd);
