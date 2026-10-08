@@ -10,6 +10,7 @@
 #include <glm/gtc/type_ptr.hpp>
 
 
+#include <array>
 #include <algorithm>
 #include <fstream>
 #include <iostream>
@@ -17,6 +18,7 @@
 #include <cstddef>
 #include <cstring>
 #include <cmath>
+#include <string>
 
 namespace application {
 
@@ -24,34 +26,56 @@ VkShaderModule vertex_shader = VK_NULL_HANDLE;
 VkShaderModule fragment_shader = VK_NULL_HANDLE;
 VkBuffer vertex_buffer = VK_NULL_HANDLE;
 VkBuffer index_buffer = VK_NULL_HANDLE;
-VkBuffer uniform_buffer = VK_NULL_HANDLE;
 VmaAllocation vertex_allocation = VK_NULL_HANDLE;
 VmaAllocation index_allocation = VK_NULL_HANDLE;
-VmaAllocation uniform_allocation = VK_NULL_HANDLE;
 VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
 VkPipeline graphics_pipeline = VK_NULL_HANDLE;
 VkDescriptorSetLayout descriptor_set_layout = VK_NULL_HANDLE;
 VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
-VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
+
 
 
 float camera_yaw = glm::radians(45.0f);
 float camera_pitch = glm::radians(28.0f);
 float camera_distance = 3.2f;
 int projection_type = 0;
-glm::vec3 object_position(0.0f);
-glm::vec3 object_rotation_degrees(0.0f);
-glm::vec3 object_scale(1.0f);
 
 
-bool animation_playing = false;
-float animation_time = 0.0f; 
-float animation_speed = 1.0f;
-glm::vec3 animation_amplitude(0.6f, 0.25f, 0.4f);
-glm::vec3 animation_rotation_speed(20.0f, 40.0f, 10.0f);
+// glm::vec3 object.position(0.0f);
+// glm::vec3 object.rotation_degrees(0.0f);
+// glm::vec3 object.scale(1.0f);
+
+// bool object.animation_playing = false;
+// float object.animation_time = 0.0f;
+// float object.animation_speed = 1.0f;
+// glm::vec3 object.animation_amplitude(0.6f, 0.25f, 0.4f);
+// glm::vec3 object.animation_rotation_speed(20.0f, 40.0f, 10.0f);
 
 
-glm::vec3 object_color(1.0f, 1.0f, 1.0f);
+struct SceneObject {
+    glm::vec3 position{0.0f};
+    glm::vec3 rotation_degrees{0.0f};
+    glm::vec3 scale{1.0f};
+    glm::vec3 color{1.0f, 1.0f, 1.0f};
+
+    bool animation_playing = false;
+    float animation_time = 0.0f;
+    float animation_speed = 1.0f;
+
+    glm::vec3 animation_amplitude{0.6f, 0.25f, 0.4f};
+    glm::vec3 animation_rotation_speed{20.0f, 40.0f, 10.0f};
+
+    VkBuffer uniform_buffer = VK_NULL_HANDLE;
+    VmaAllocation uniform_allocation = VK_NULL_HANDLE;
+    VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
+};
+
+constexpr std::size_t MAX_OBJECTS = 100;
+
+std::array<SceneObject, MAX_OBJECTS> objects{};
+std::size_t object_count = 2;
+
+int selected_object = 0;
 
 
 struct Vertex {
@@ -318,7 +342,7 @@ bool createIndexBuffer(){
 }
 
 
-bool createUniformBuffer(){
+bool createUniformBuffer(SceneObject& object){
 
     auto& context = graphics::internal::context;
 
@@ -337,8 +361,8 @@ bool createUniformBuffer(){
         context.allocator,
         &buffer_info,
         &allocation_info,
-        &uniform_buffer,
-        &uniform_allocation,
+        &object.uniform_buffer,
+        &object.uniform_allocation,
         nullptr
     );
 
@@ -354,7 +378,7 @@ bool createUniformBuffer(){
 }
 
 
-bool updateUniformBuffer(){
+bool updateUniformBuffer(const SceneObject& object){
 
     auto& context = graphics::internal::context;
 
@@ -369,25 +393,25 @@ bool updateUniformBuffer(){
     // const glm::mat4 model(1.0f);
     // const glm::mat4 translation = glm::translate(
     //     glm::mat4(1.0f),
-    //     object_position
+    //     object.position
     // );
 
-    const float t = animation_time;
+    const float t = object.animation_time;
     const glm::vec3 animation_offset(
-        animation_amplitude.x * std::sin(t),
-        animation_amplitude.y * std::sin(2.0f * t),
-        animation_amplitude.z * std::sin(3.0f * t)
+        object.animation_amplitude.x * std::sin(t),
+        object.animation_amplitude.y * std::sin(2.0f * t),
+        object.animation_amplitude.z * std::sin(3.0f * t)
     );
 
-    const glm::vec3 animated_position = object_position + animation_offset;
+    const glm::vec3 animated_position = object.position + animation_offset;
     const glm::mat4 translation = glm::translate(
         glm::mat4(1.0f),
         animated_position
     );
 
 
-    // const glm::vec3 angles = glm::radians(object_rotation_degrees);
-    const glm::vec3 animated_rotation_degrees = object_rotation_degrees + animation_rotation_speed * animation_time;
+    // const glm::vec3 angles = glm::radians(object.rotation_degrees);
+    const glm::vec3 animated_rotation_degrees = object.rotation_degrees + object.animation_rotation_speed * object.animation_time;
     const glm::vec3 angles = glm::radians(animated_rotation_degrees);
 
     glm::mat4 rotation(1.0f);
@@ -412,7 +436,7 @@ bool updateUniformBuffer(){
 
     const glm::mat4 scaling = glm::scale(
         glm::mat4(1.0f),
-        object_scale
+        object.scale
     );
 
     const glm::mat4 model = translation * rotation * scaling;
@@ -467,16 +491,16 @@ bool updateUniformBuffer(){
         sizeof(uniforms.matrix)
     );
 
-    uniforms.base_color[0] = object_color.r;
-    uniforms.base_color[1] = object_color.g;
-    uniforms.base_color[2] = object_color.b;
+    uniforms.base_color[0] = object.color.r;
+    uniforms.base_color[1] = object.color.g;
+    uniforms.base_color[2] = object.color.b;
     uniforms.base_color[3] = 1.0f;
 
 
     VkResult result = vmaCopyMemoryToAllocation(
         context.allocator,
         &uniforms,
-        uniform_allocation,
+        object.uniform_allocation,
         0,
         sizeof(uniforms)
     );
@@ -704,36 +728,40 @@ bool createDescriptorSetLayout(){
 }
 
 
-bool createDescriptorSet(){
+bool createDescriptorPool() {
 
     auto& context = graphics::internal::context;
 
-
     VkDescriptorPoolSize pool_size{};
     pool_size.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    pool_size.descriptorCount = 1;
-
+    pool_size.descriptorCount = static_cast<std::uint32_t>(MAX_OBJECTS);
 
     VkDescriptorPoolCreateInfo pool_info{};
     pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    pool_info.maxSets = 1;
+    pool_info.maxSets = static_cast<std::uint32_t>(MAX_OBJECTS);
     pool_info.poolSizeCount = 1;
     pool_info.pPoolSizes = &pool_size;
 
-
-    VkResult result = vkCreateDescriptorPool(
+    const VkResult result = vkCreateDescriptorPool(
         context.device,
         &pool_info,
         nullptr,
         &descriptor_pool
     );
 
-
-    if (result != VK_SUCCESS) {
+    if (result != VK_SUCCESS){
         std::cerr << "Cannot create descriptor pool\n";
         return false;
     }
 
+    return true;
+
+}
+
+
+bool createDescriptorSet(SceneObject& object) {
+
+    auto& context = graphics::internal::context;
 
     VkDescriptorSetAllocateInfo allocate_info{};
     allocate_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
@@ -742,33 +770,32 @@ bool createDescriptorSet(){
     allocate_info.pSetLayouts = &descriptor_set_layout;
 
 
-    result = vkAllocateDescriptorSets(
+    const VkResult result = vkAllocateDescriptorSets(
         context.device,
         &allocate_info,
-        &descriptor_set
+        &object.descriptor_set
     );
 
 
-    if (result != VK_SUCCESS) {
+    if (result != VK_SUCCESS){
         std::cerr << "Cannot allocate descriptor set\n";
         return false;
     }
 
 
     VkDescriptorBufferInfo buffer_info{};
-    buffer_info.buffer = uniform_buffer;
+    buffer_info.buffer = object.uniform_buffer;
     buffer_info.offset = 0;
     buffer_info.range = sizeof(GlobalUniforms);
 
 
     VkWriteDescriptorSet write{};
     write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = descriptor_set;
+    write.dstSet = object.descriptor_set;
     write.dstBinding = 0;
     write.descriptorCount = 1;
     write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     write.pBufferInfo = &buffer_info;
-
 
     vkUpdateDescriptorSets(
         context.device,
@@ -815,19 +842,38 @@ bool initialize() {
         return false;
     }
 
-    if (!createUniformBuffer()){
+    if (!createDescriptorSetLayout()) {
         shutdown();
         return false;
     }
 
-    if (!createDescriptorSetLayout()){
+    if (!createDescriptorPool()) {
         shutdown();
         return false;
     }
 
-    if (!createDescriptorSet()) {
-        shutdown();
-        return false;
+
+    objects[0].position = glm::vec3(-0.7f, 0.0f, 0.0f);
+    objects[0].scale = glm::vec3(0.6f);
+    objects[0].color = glm::vec3(1.0f, 0.3f, 0.3f);
+
+    objects[1].position = glm::vec3(0.7f, 0.0f, 0.0f);
+    objects[1].scale = glm::vec3(0.6f);
+    objects[1].color = glm::vec3(0.3f, 0.5f, 1.0f);
+
+
+    for (std::size_t i = 0; i < object_count; ++i) {
+        auto& object = objects[i];
+
+        if (!createUniformBuffer(object)) {
+            shutdown();
+            return false;
+        }
+
+        if (!createDescriptorSet(object)) {
+            shutdown();
+            return false;
+        }
     }
 
     if (!createPipeline()){
@@ -868,11 +914,21 @@ void shutdown() {
         nullptr
     );
 
-    vmaDestroyBuffer(
-        context.allocator,
-        uniform_buffer,
-        uniform_allocation
-    );
+    for (std::size_t i = 0; i < object_count; ++i) {
+        auto& object = objects[i];
+
+        if (object.uniform_buffer != VK_NULL_HANDLE) {
+            vmaDestroyBuffer(
+                context.allocator,
+                object.uniform_buffer,
+                object.uniform_allocation
+            );
+        }
+
+        object.uniform_buffer = VK_NULL_HANDLE;
+        object.uniform_allocation = VK_NULL_HANDLE;
+        object.descriptor_set = VK_NULL_HANDLE;
+    }
 
     vmaDestroyBuffer(
         context.allocator,
@@ -893,8 +949,6 @@ void shutdown() {
     graphics_pipeline = VK_NULL_HANDLE;
     pipeline_layout = VK_NULL_HANDLE;
     descriptor_set_layout = VK_NULL_HANDLE;
-    uniform_buffer = VK_NULL_HANDLE;
-    uniform_allocation = VK_NULL_HANDLE;
     vertex_buffer = VK_NULL_HANDLE;
     vertex_allocation = VK_NULL_HANDLE;
     index_buffer = VK_NULL_HANDLE;
@@ -902,8 +956,6 @@ void shutdown() {
     fragment_shader = VK_NULL_HANDLE;
     vertex_shader = VK_NULL_HANDLE;
     descriptor_pool = VK_NULL_HANDLE;
-    descriptor_set = VK_NULL_HANDLE;
-
 
 }
 
@@ -944,25 +996,42 @@ void update(double time, float camera_horizontal, float camera_vertical){
             2
         );
 
+
+        ImGui::Separator();
+        ImGui::Text("Select object");
+
+        for (std::size_t i = 0; i < object_count; i++) {
+            const std::string label =
+                "Cube " + std::to_string(i + 1);
+
+            if (ImGui::Selectable(
+                    label.c_str(),
+                    selected_object == static_cast<int>(i))) {
+                selected_object = static_cast<int>(i);
+            }
+        }
+
+        auto& object = objects[selected_object];
+
         ImGui::Separator();
         ImGui::Text("Object transform");
 
         ImGui::DragFloat3(
             "Position",
-            glm::value_ptr(object_position),
+            glm::value_ptr(object.position),
             0.01f
         );
 
         ImGui::SliderFloat3(
             "Rotation (degrees)",
-            glm::value_ptr(object_rotation_degrees),
+            glm::value_ptr(object.rotation_degrees),
             -180.0f,
             180.0f
         );
 
         ImGui::SliderFloat3(
             "Scale",
-            glm::value_ptr(object_scale),
+            glm::value_ptr(object.scale),
             0.1f,
             3.0f,
             "%.2f",
@@ -970,18 +1039,18 @@ void update(double time, float camera_horizontal, float camera_vertical){
         );
 
         if (ImGui::Button("Reset transform")) {
-            object_position = glm::vec3(0.0f);
-            object_rotation_degrees = glm::vec3(0.0f);
-            object_scale = glm::vec3(1.0f);
+            object.position = glm::vec3(0.0f);
+            object.rotation_degrees = glm::vec3(0.0f);
+            object.scale = glm::vec3(1.0f);
         }
 
         ImGui::Separator();
         ImGui::Text("Animation");
-        ImGui::Checkbox("Play animation", &animation_playing);
+        ImGui::Checkbox("Play animation", &object.animation_playing);
 
         ImGui::SliderFloat(
             "Animation speed",
-            &animation_speed,
+            &object.animation_speed,
             0.1f,
             3.0f,
             "%.2f",
@@ -990,7 +1059,7 @@ void update(double time, float camera_horizontal, float camera_vertical){
 
         ImGui::SliderFloat3(
             "Movement amplitude",
-            glm::value_ptr(animation_amplitude),
+            glm::value_ptr(object.animation_amplitude),
             0.0f,
             1.0f,
             "%.2f",
@@ -999,13 +1068,13 @@ void update(double time, float camera_horizontal, float camera_vertical){
 
         ImGui::DragFloat3(
             "Rotation speed (deg/s)",
-            glm::value_ptr(animation_rotation_speed),
+            glm::value_ptr(object.animation_rotation_speed),
             1.0f
         );
 
         if (ImGui::Button("Reset animation")) {
-            animation_time = 0.0f;
-            animation_playing = false;
+            object.animation_time = 0.0f;
+            object.animation_playing = false;
         }
 
         ImGui::Separator();
@@ -1013,7 +1082,7 @@ void update(double time, float camera_horizontal, float camera_vertical){
 
         ImGui::ColorEdit3(
             "Base color",
-            glm::value_ptr(object_color)
+            glm::value_ptr(object.color)
         );
 
 
@@ -1021,8 +1090,13 @@ void update(double time, float camera_horizontal, float camera_vertical){
 
     ImGui::End();
 
-    if (animation_playing){
-        animation_time += delta_time * animation_speed;
+    for (std::size_t i = 0; i < object_count; ++i){
+
+        auto& object = objects[i];
+
+        if (object.animation_playing){
+            object.animation_time +=delta_time * object.animation_speed;
+        }
     }
 
 }
@@ -1031,7 +1105,13 @@ void render(const graphics::internal::FrameData& fd) {
 	
     auto& context = graphics::internal::context;
     VkCommandBuffer command_buffer = fd.command_buffer;
-    const bool uniforms_ready = updateUniformBuffer();
+    bool uniforms_ready = true;
+
+    for (std::size_t i = 0; i < object_count; ++i) {
+        if (!updateUniformBuffer(objects[i])) {
+            uniforms_ready = false;
+        }
+    }
 
     vkResetCommandBuffer(command_buffer, 0);
     VkCommandBufferBeginInfo begin_info{};
@@ -1103,32 +1183,48 @@ void render(const graphics::internal::FrameData& fd) {
         VK_INDEX_TYPE_UINT16
     );
 
-    vkCmdBindDescriptorSets(
-        command_buffer,
-        VK_PIPELINE_BIND_POINT_GRAPHICS,
-        pipeline_layout,
-        0,
-        1,
-        &descriptor_set,
-        0,
-        nullptr
-    );
+    // vkCmdBindDescriptorSets(
+    //     command_buffer,
+    //     VK_PIPELINE_BIND_POINT_GRAPHICS,
+    //     pipeline_layout,
+    //     0,
+    //     1,
+    //     &objects[0].descriptor_set,
+    //     0,
+    //     nullptr
+    // );
 
     // if (uniforms_ready) {
     //     vkCmdDrawIndexed(command_buffer, 36, 1, 0, 0, 0);
     // }
 
-    if (uniforms_ready){
-        vkCmdDrawIndexed(
-            command_buffer,
-            static_cast<std::uint32_t>(cube_mesh.indices.size()),
-            1,
-            0,
-            0,
-            0
-        );
+    if (uniforms_ready) {
+        for (std::size_t i = 0; i < object_count; ++i) {
+            const auto& object = objects[i];
+
+            vkCmdBindDescriptorSets(
+                command_buffer,
+                VK_PIPELINE_BIND_POINT_GRAPHICS,
+                pipeline_layout,
+                0,
+                1,
+                &object.descriptor_set,
+                0,
+                nullptr
+            );
+
+            vkCmdDrawIndexed(
+                command_buffer,
+                static_cast<std::uint32_t>(cube_mesh.indices.size()),
+                1,
+                0,
+                0,
+                0
+            );
+        }
     }
 
+    
     vkCmdEndRenderPass(command_buffer);
     vkEndCommandBuffer(command_buffer);
 
