@@ -38,40 +38,123 @@ VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
 float camera_yaw = glm::radians(45.0f);
 float camera_pitch = glm::radians(28.0f);
 float camera_distance = 3.2f;
+int projection_type = 0;
+glm::vec3 object_position(0.0f);
+glm::vec3 object_rotation_degrees(0.0f);
+glm::vec3 object_scale(1.0f);
+
+
+bool animation_playing = false;
+float animation_time = 0.0f; 
+float animation_speed = 1.0f;
+glm::vec3 animation_amplitude(0.6f, 0.25f, 0.4f);
+glm::vec3 animation_rotation_speed(20.0f, 40.0f, 10.0f);
+
+
+glm::vec3 object_color(1.0f, 1.0f, 1.0f);
 
 
 struct Vertex {
 
     float position[3];
+    float color[3];
 
 };
 
 
 struct alignas(16) GlobalUniforms{
+    
     float matrix[4][4];
+    float base_color[4];
+
 };
 
 
-const Vertex vertices[] = {
-    {{-0.5f, -0.5f, -0.5f}}, // 0
-    {{ 0.5f, -0.5f, -0.5f}}, // 1
-    {{ 0.5f,  0.5f, -0.5f}}, // 2
-    {{-0.5f,  0.5f, -0.5f}}, // 3
-    {{-0.5f, -0.5f,  0.5f}}, // 4
-    {{ 0.5f, -0.5f,  0.5f}}, // 5
-    {{ 0.5f,  0.5f,  0.5f}}, // 6
-    {{-0.5f,  0.5f,  0.5f}}  // 7
+// const Vertex vertices[] = {
+//     {{-0.5f, -0.5f, -0.5f}, {0.0f, 0.0f, 0.0f}}, // 0: чёрный
+//     {{ 0.5f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}}, // 1: красный
+//     {{ 0.5f,  0.5f, -0.5f}, {1.0f, 1.0f, 0.0f}}, // 2: жёлтый
+//     {{-0.5f,  0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}}, // 3: зелёный
+//     {{-0.5f, -0.5f,  0.5f}, {0.0f, 0.0f, 1.0f}}, // 4: синий
+//     {{ 0.5f, -0.5f,  0.5f}, {1.0f, 0.0f, 1.0f}}, // 5: пурпурный
+//     {{ 0.5f,  0.5f,  0.5f}, {1.0f, 1.0f, 1.0f}}, // 6: белый
+//     {{-0.5f,  0.5f,  0.5f}, {0.0f, 1.0f, 1.0f}}  // 7: голубой
+// };
+
+
+// const std::uint16_t indices[] = {
+//     4, 5, 6,  6, 7, 4, // передняя грань
+//     1, 0, 3,  3, 2, 1, // задняя грань
+//     0, 4, 7,  7, 3, 0, // левая грань
+//     5, 1, 2,  2, 6, 5, // правая грань
+//     7, 6, 2,  2, 3, 7, // верхняя грань
+//     0, 1, 5,  5, 4, 0  // нижняя грань 
+// };
+
+
+struct MeshData {
+
+    std::vector<Vertex> vertices;
+    std::vector<std::uint16_t> indices;
+
 };
 
 
-const std::uint16_t indices[] = {
-    4, 5, 6,  6, 7, 4, // передняя грань
-    1, 0, 3,  3, 2, 1, // задняя грань
-    0, 4, 7,  7, 3, 0, // левая грань
-    5, 1, 2,  2, 6, 5, // правая грань
-    7, 6, 2,  2, 3, 7, // верхняя грань
-    0, 1, 5,  5, 4, 0  // нижняя грань 
-};
+MeshData generateCube(float side_length) {
+
+    MeshData mesh;
+
+    const float half_size = side_length * 0.5f;
+
+
+    for (int z = -1; z <= 1; z += 2) {
+        for (int y = -1; y <= 1; y += 2) {
+            for (int x = -1; x <= 1; x += 2) {
+
+                mesh.vertices.push_back({
+                    {
+                        x * half_size,
+                        y * half_size,
+                        z * half_size
+                    },
+                    {
+                        (x + 1) * 0.5f,
+                        (y + 1) * 0.5f,
+                        (z + 1) * 0.5f
+                    }
+                });
+
+            }
+        }
+    }
+
+
+    const std::uint16_t faces[6][4] = {
+        {4, 5, 7, 6}, // передняя
+        {1, 0, 2, 3}, // задняя
+        {0, 4, 6, 2}, // левая
+        {5, 1, 3, 7}, // правая
+        {6, 7, 3, 2}, // верхняя
+        {0, 1, 5, 4}  // нижняя
+    };
+
+
+    for (const auto& face : faces) {
+        mesh.indices.insert(
+            mesh.indices.end(),
+            {
+                face[0], face[1], face[2],
+                face[2], face[3], face[0]
+            }
+        );
+    }
+
+    return mesh;
+
+}
+
+
+const MeshData cube_mesh = generateCube(1.0f);
 
 
 VkShaderModule loadShader(const char* path){
@@ -133,7 +216,7 @@ bool createVertexBuffer(){
 
     VkBufferCreateInfo buffer_info{};
     buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    buffer_info.size = sizeof(vertices);
+    buffer_info.size = cube_mesh.vertices.size() * sizeof(Vertex);
     buffer_info.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
     buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
@@ -157,10 +240,10 @@ bool createVertexBuffer(){
 
     result = vmaCopyMemoryToAllocation(
         context.allocator,
-        vertices,
+        cube_mesh.vertices.data(),
         vertex_allocation,
         0,
-        sizeof(vertices)
+        buffer_info.size
     );
 
     if (result != VK_SUCCESS) {
@@ -188,7 +271,7 @@ bool createIndexBuffer(){
 
     VkBufferCreateInfo buffer_info{};
     buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    buffer_info.size = sizeof(indices);
+    buffer_info.size = cube_mesh.indices.size() * sizeof(std::uint16_t);
     buffer_info.usage = VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
     buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
@@ -216,10 +299,10 @@ bool createIndexBuffer(){
 
     result = vmaCopyMemoryToAllocation(
         context.allocator,
-        indices,
+        cube_mesh.indices.data(),
         index_allocation,
         0,
-        sizeof(indices)
+        buffer_info.size
     );
 
     if (result != VK_SUCCESS) {
@@ -283,7 +366,56 @@ bool updateUniformBuffer(){
 
 
     const auto aspect = static_cast<float>(extent.width) / static_cast<float>(extent.height);
-    const glm::mat4 model(1.0f);
+    // const glm::mat4 model(1.0f);
+    // const glm::mat4 translation = glm::translate(
+    //     glm::mat4(1.0f),
+    //     object_position
+    // );
+
+    const float t = animation_time;
+    const glm::vec3 animation_offset(
+        animation_amplitude.x * std::sin(t),
+        animation_amplitude.y * std::sin(2.0f * t),
+        animation_amplitude.z * std::sin(3.0f * t)
+    );
+
+    const glm::vec3 animated_position = object_position + animation_offset;
+    const glm::mat4 translation = glm::translate(
+        glm::mat4(1.0f),
+        animated_position
+    );
+
+
+    // const glm::vec3 angles = glm::radians(object_rotation_degrees);
+    const glm::vec3 animated_rotation_degrees = object_rotation_degrees + animation_rotation_speed * animation_time;
+    const glm::vec3 angles = glm::radians(animated_rotation_degrees);
+
+    glm::mat4 rotation(1.0f);
+
+    rotation = glm::rotate(
+        rotation,
+        angles.z,
+        glm::vec3(0.0f, 0.0f, 1.0f)
+    );
+
+    rotation = glm::rotate(
+        rotation,
+        angles.y,
+        glm::vec3(0.0f, 1.0f, 0.0f)
+    );
+
+    rotation = glm::rotate(
+        rotation,
+        angles.x,
+        glm::vec3(1.0f, 0.0f, 0.0f)
+    );
+
+    const glm::mat4 scaling = glm::scale(
+        glm::mat4(1.0f),
+        object_scale
+    );
+
+    const glm::mat4 model = translation * rotation * scaling;
     
     const float horizontal_radius = camera_distance * std::cos(camera_pitch);
     const glm::vec3 camera_position(
@@ -298,13 +430,33 @@ bool updateUniformBuffer(){
         glm::vec3(0.0f, 1.0f, 0.0f)
     );
 
-    glm::mat4 projection = glm::perspectiveRH_ZO(
-        glm::radians(45.0f), // вертикальный угол обзора
-        aspect,             // ширина окна / высота окна
-        0.1f,               // ближняя граница видимости
-        100.0f              // дальняя граница видимости
-    );
-    
+    glm::mat4 projection(1.0f);
+
+    if (projection_type == 0){
+
+        projection = glm::perspectiveRH_ZO(
+            glm::radians(45.0f), // вертикальный угол обзора
+            aspect,             // ширина окна / высота окна
+            0.1f,               // ближняя граница видимости
+            100.0f              // дальняя граница видимости
+        );
+
+    } else {
+
+        const float half_height = 1.5f;
+        const float half_width = half_height * aspect;
+
+        projection = glm::orthoRH_ZO(
+            -half_width,   // левая граница
+            half_width,   // правая граница
+            -half_height,  // нижняя граница
+            half_height,  // верхняя граница
+            0.1f,         // ближняя плоскость
+            100.0f        // дальняя плоскость
+        );
+
+    }
+
     projection[1][1] *= -1.0f;
     const glm::mat4 matrix = projection * view * model;
 
@@ -314,6 +466,11 @@ bool updateUniformBuffer(){
         glm::value_ptr(matrix),
         sizeof(uniforms.matrix)
     );
+
+    uniforms.base_color[0] = object_color.r;
+    uniforms.base_color[1] = object_color.g;
+    uniforms.base_color[2] = object_color.b;
+    uniforms.base_color[3] = 1.0f;
 
 
     VkResult result = vmaCopyMemoryToAllocation(
@@ -358,6 +515,18 @@ VkVertexInputAttributeDescription getPositionAttribute() {
 }
 
 
+VkVertexInputAttributeDescription getColorAttribute() {
+    VkVertexInputAttributeDescription attribute{};
+
+    attribute.location = 1;
+    attribute.binding = 0;
+    attribute.format = VK_FORMAT_R32G32B32_SFLOAT;
+    attribute.offset = offsetof(Vertex, color);
+
+    return attribute;
+}
+
+
 bool createPipeline(){
     auto& context = graphics::internal::context;
 
@@ -377,15 +546,18 @@ bool createPipeline(){
 
 
     auto binding = getVertexBinding();
-    auto attribute = getPositionAttribute();
+    VkVertexInputAttributeDescription attributes[] = {
+        getPositionAttribute(),
+        getColorAttribute()
+    };
 
 
     VkPipelineVertexInputStateCreateInfo vertex_input{};
     vertex_input.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     vertex_input.vertexBindingDescriptionCount = 1;
     vertex_input.pVertexBindingDescriptions = &binding;
-    vertex_input.vertexAttributeDescriptionCount = 1;
-    vertex_input.pVertexAttributeDescriptions = &attribute;
+    vertex_input.vertexAttributeDescriptionCount = 2;
+    vertex_input.pVertexAttributeDescriptions = attributes;
 
 
     VkPipelineInputAssemblyStateCreateInfo assembly{};
@@ -758,7 +930,100 @@ void update(double time, float camera_horizontal, float camera_vertical){
         glm::radians(85.0f)
     );
 
-    ImGui::ShowDemoWindow();
+    if (ImGui::Begin("Scene settings")) {
+
+        const char* projection_names[] ={
+            "Perspective",
+            "Orthographic"
+        };
+
+        ImGui::Combo(
+            "Projection",
+            &projection_type,
+            projection_names,
+            2
+        );
+
+        ImGui::Separator();
+        ImGui::Text("Object transform");
+
+        ImGui::DragFloat3(
+            "Position",
+            glm::value_ptr(object_position),
+            0.01f
+        );
+
+        ImGui::SliderFloat3(
+            "Rotation (degrees)",
+            glm::value_ptr(object_rotation_degrees),
+            -180.0f,
+            180.0f
+        );
+
+        ImGui::SliderFloat3(
+            "Scale",
+            glm::value_ptr(object_scale),
+            0.1f,
+            3.0f,
+            "%.2f",
+            ImGuiSliderFlags_AlwaysClamp
+        );
+
+        if (ImGui::Button("Reset transform")) {
+            object_position = glm::vec3(0.0f);
+            object_rotation_degrees = glm::vec3(0.0f);
+            object_scale = glm::vec3(1.0f);
+        }
+
+        ImGui::Separator();
+        ImGui::Text("Animation");
+        ImGui::Checkbox("Play animation", &animation_playing);
+
+        ImGui::SliderFloat(
+            "Animation speed",
+            &animation_speed,
+            0.1f,
+            3.0f,
+            "%.2f",
+            ImGuiSliderFlags_AlwaysClamp
+        );
+
+        ImGui::SliderFloat3(
+            "Movement amplitude",
+            glm::value_ptr(animation_amplitude),
+            0.0f,
+            1.0f,
+            "%.2f",
+            ImGuiSliderFlags_AlwaysClamp
+        );
+
+        ImGui::DragFloat3(
+            "Rotation speed (deg/s)",
+            glm::value_ptr(animation_rotation_speed),
+            1.0f
+        );
+
+        if (ImGui::Button("Reset animation")) {
+            animation_time = 0.0f;
+            animation_playing = false;
+        }
+
+        ImGui::Separator();
+        ImGui::Text("Object color");
+
+        ImGui::ColorEdit3(
+            "Base color",
+            glm::value_ptr(object_color)
+        );
+
+
+    }
+
+    ImGui::End();
+
+    if (animation_playing){
+        animation_time += delta_time * animation_speed;
+    }
 
 }
 
@@ -849,8 +1114,19 @@ void render(const graphics::internal::FrameData& fd) {
         nullptr
     );
 
-    if (uniforms_ready) {
-        vkCmdDrawIndexed(command_buffer, 36, 1, 0, 0, 0);
+    // if (uniforms_ready) {
+    //     vkCmdDrawIndexed(command_buffer, 36, 1, 0, 0, 0);
+    // }
+
+    if (uniforms_ready){
+        vkCmdDrawIndexed(
+            command_buffer,
+            static_cast<std::uint32_t>(cube_mesh.indices.size()),
+            1,
+            0,
+            0,
+            0
+        );
     }
 
     vkCmdEndRenderPass(command_buffer);
