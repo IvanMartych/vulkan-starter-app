@@ -20,24 +20,45 @@
 
 namespace application {
 
+
 VkShaderModule vertex_shader = VK_NULL_HANDLE;
 VkShaderModule fragment_shader = VK_NULL_HANDLE;
+VkShaderModule light_vertex_shader = VK_NULL_HANDLE;
+VkShaderModule light_fragment_shader = VK_NULL_HANDLE;
+
 VkBuffer vertex_buffer = VK_NULL_HANDLE;
 VkBuffer index_buffer = VK_NULL_HANDLE;
-VkBuffer uniform_buffer = VK_NULL_HANDLE;
+
 VmaAllocation vertex_allocation = VK_NULL_HANDLE;
 VmaAllocation index_allocation = VK_NULL_HANDLE;
-VmaAllocation uniform_allocation = VK_NULL_HANDLE;
+
+VkBuffer scene_uniform_buffer = VK_NULL_HANDLE;
+VkBuffer model_uniform_buffer = VK_NULL_HANDLE;
+
+VmaAllocation scene_uniform_allocation = VK_NULL_HANDLE;
+VmaAllocation model_uniform_allocation = VK_NULL_HANDLE;
+
+VkDescriptorSetLayout scene_descriptor_set_layout = VK_NULL_HANDLE;
+VkDescriptorSetLayout model_descriptor_set_layout = VK_NULL_HANDLE;
+
+VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
+
+VkDescriptorSet scene_descriptor_set = VK_NULL_HANDLE;
+VkDescriptorSet model_descriptor_set = VK_NULL_HANDLE;
+
 VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
 VkPipeline graphics_pipeline = VK_NULL_HANDLE;
-VkDescriptorSetLayout descriptor_set_layout = VK_NULL_HANDLE;
-VkDescriptorPool descriptor_pool = VK_NULL_HANDLE;
-VkDescriptorSet descriptor_set = VK_NULL_HANDLE;
+VkPipeline light_pipeline = VK_NULL_HANDLE;
+
+VkBuffer point_light_buffer = VK_NULL_HANDLE;
+VmaAllocation point_light_allocation = VK_NULL_HANDLE;
 
 
-float camera_yaw = glm::radians(45.0f);
-float camera_pitch = glm::radians(28.0f);
-float camera_distance = 3.2f;
+glm::vec3 camera_position{0.0f, 0.0f, 3.0f};
+float camera_yaw = glm::radians(-90.0f);
+float camera_pitch = glm::radians(0.0f);
+float camera_fov_degrees = 45.0f;
+
 int projection_type = 0;
 glm::vec3 object_position(0.0f);
 glm::vec3 object_rotation_degrees(0.0f);
@@ -53,19 +74,63 @@ glm::vec3 animation_rotation_speed(20.0f, 40.0f, 10.0f);
 
 glm::vec3 object_color(1.0f, 1.0f, 1.0f);
 
+glm::vec3 object_specular_color{0.5f, 0.5f, 0.5f};
+float object_shininess = 32.0f;
+
+glm::vec3 directional_light_direction{-0.5f, -1.0f, -0.5f};
+glm::vec3 directional_light_color{1.0f};
+float directional_light_intensity = 1.0f;
+
+glm::vec3 ambient_light_color{1.0f};
+float ambient_light_intensity = 0.15f;
+bool show_light_sources = true;
+
+
+struct PointLight {
+    glm::vec3 position{1.0f, 0.6f, 1.0f};
+    glm::vec3 color{1.0f, 1.0f, 1.0f};
+    float intensity = 5.0f;
+};
+
+struct alignas(16) PointLightData {
+    float position[4];
+    float color[4];
+};
+
+constexpr std::size_t MAX_POINT_LIGHTS = 100;
+
+std::vector<PointLight> point_lights{PointLight{}};
+
 
 struct Vertex {
 
     float position[3];
     float color[3];
+    float normal[3];
 
 };
 
 
-struct alignas(16) GlobalUniforms{
-    
-    float matrix[4][4];
+struct alignas(16) SceneUniforms {
+
+    float view_projection[4][4];
+    float camera_position[4];
+    float camera_direction[4];
+
+    float directional_light_direction[4];
+    float directional_light_color[4];
+    float ambient_light[4];
+
+    std::uint32_t light_counts[4];
+
+};
+
+
+struct alignas(16) ModelUniforms {
+
+    float model[4][4];
     float base_color[4];
+    float specular[4];
 
 };
 
@@ -99,58 +164,87 @@ struct MeshData {
 
 };
 
-
-MeshData generateCube(float side_length) {
+MeshData generateCube(float side_length){
 
     MeshData mesh;
 
     const float half_size = side_length * 0.5f;
 
+    std::vector<glm::vec3> corners;
 
     for (int z = -1; z <= 1; z += 2) {
         for (int y = -1; y <= 1; y += 2) {
             for (int x = -1; x <= 1; x += 2) {
-
-                mesh.vertices.push_back({
-                    {
-                        x * half_size,
-                        y * half_size,
-                        z * half_size
-                    },
-                    {
-                        (x + 1) * 0.5f,
-                        (y + 1) * 0.5f,
-                        (z + 1) * 0.5f
-                    }
+                corners.push_back({
+                    x * half_size,
+                    y * half_size,
+                    z * half_size
                 });
-
             }
         }
     }
 
-
     const std::uint16_t faces[6][4] = {
-        {4, 5, 7, 6}, // передняя
-        {1, 0, 2, 3}, // задняя
-        {0, 4, 6, 2}, // левая
-        {5, 1, 3, 7}, // правая
-        {6, 7, 3, 2}, // верхняя
-        {0, 1, 5, 4}  // нижняя
+        {4, 5, 7, 6}, // +Z
+        {1, 0, 2, 3}, // -Z
+        {0, 4, 6, 2}, // -X
+        {5, 1, 3, 7}, // +X
+        {6, 7, 3, 2}, // +Y
+        {0, 1, 5, 4}  // -Y
     };
 
+    for (const auto& face : faces){
 
-    for (const auto& face : faces) {
-        mesh.indices.insert(
-            mesh.indices.end(),
-            {
-                face[0], face[1], face[2],
-                face[2], face[3], face[0]
-            }
+        const glm::vec3 p0 = corners[face[0]];
+        const glm::vec3 p1 = corners[face[1]];
+        const glm::vec3 p2 = corners[face[2]];
+
+        const glm::vec3 edge1 = p1 - p0;
+        const glm::vec3 edge2 = p2 - p0;
+
+        const glm::vec3 normal = glm::normalize(
+            glm::cross(edge1, edge2)
         );
+
+        const std::size_t first_vertex = mesh.vertices.size();
+
+        for (const auto corner_index : face) {
+            const glm::vec3 position = corners[corner_index];
+
+            mesh.vertices.push_back({
+                {
+                    position.x,
+                    position.y,
+                    position.z
+                },
+                {
+                    position.x / side_length + 0.5f,
+                    position.y / side_length + 0.5f,
+                    position.z / side_length + 0.5f
+                },
+                {
+                    normal.x,
+                    normal.y,
+                    normal.z
+                }
+            });
+        }
+
+        const std::uint16_t local_indices[] = {
+            0, 1, 2,
+            2, 3, 0
+        };
+
+        for (const auto local_index : local_indices) {
+            mesh.indices.push_back(
+                static_cast<std::uint16_t>(
+                    first_vertex + local_index
+                )
+            );
+        }
     }
 
     return mesh;
-
 }
 
 
@@ -318,14 +412,48 @@ bool createIndexBuffer(){
 }
 
 
-bool createUniformBuffer(){
+bool createUniformBuffer(VkDeviceSize size, VkBuffer& buffer, VmaAllocation& allocation){
 
     auto& context = graphics::internal::context;
 
     VkBufferCreateInfo buffer_info{};
     buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    buffer_info.size = sizeof(GlobalUniforms);
+    buffer_info.size = size;
     buffer_info.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VmaAllocationCreateInfo allocation_info{};
+    allocation_info.usage = VMA_MEMORY_USAGE_AUTO;
+    allocation_info.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+
+    const VkResult result = vmaCreateBuffer(
+        context.allocator,
+        &buffer_info,
+        &allocation_info,
+        &buffer,
+        &allocation,
+        nullptr
+    );
+
+    if (result != VK_SUCCESS) {
+        std::cerr << "Cannot create uniform buffer\n";
+        return false;
+    }
+
+    return true;
+
+}
+
+
+bool createPointLightBuffer(){
+
+    auto& context = graphics::internal::context;
+
+
+    VkBufferCreateInfo buffer_info{};
+    buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    buffer_info.size = MAX_POINT_LIGHTS * sizeof(PointLightData);
+    buffer_info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
     buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
 
@@ -333,18 +461,19 @@ bool createUniformBuffer(){
     allocation_info.usage = VMA_MEMORY_USAGE_AUTO;
     allocation_info.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
 
-    VkResult result = vmaCreateBuffer(
+
+    const VkResult result = vmaCreateBuffer(
         context.allocator,
         &buffer_info,
         &allocation_info,
-        &uniform_buffer,
-        &uniform_allocation,
+        &point_light_buffer,
+        &point_light_allocation,
         nullptr
     );
 
 
     if (result != VK_SUCCESS) {
-        std::cerr << "Cannot create uniform buffer\n";
+        std::cerr << "Cannot create point light buffer\n";
         return false;
     }
 
@@ -354,7 +483,71 @@ bool createUniformBuffer(){
 }
 
 
-bool updateUniformBuffer(){
+bool updatePointLightBuffer() {
+
+    if (point_lights.size() > MAX_POINT_LIGHTS) {
+        std::cerr << "Too many point lights\n";
+        return false;
+    }
+
+    if (point_lights.empty()) {
+        return true;
+    }
+
+    std::vector<PointLightData> data(point_lights.size());
+
+    for (std::size_t i = 0; i < point_lights.size(); ++i){
+
+        const auto& light = point_lights[i];
+
+        data[i].position[0] = light.position.x;
+        data[i].position[1] = light.position.y;
+        data[i].position[2] = light.position.z;
+        data[i].position[3] = 1.0f;
+
+        data[i].color[0] = light.color.r;
+        data[i].color[1] = light.color.g;
+        data[i].color[2] = light.color.b;
+        data[i].color[3] = light.intensity;
+
+    }
+
+    auto& context = graphics::internal::context;
+
+    const VkResult result = vmaCopyMemoryToAllocation(
+        context.allocator,
+        data.data(),
+        point_light_allocation,
+        0,
+        data.size() * sizeof(PointLightData)
+    );
+
+    if (result != VK_SUCCESS) {
+        std::cerr << "Cannot update point light buffer\n";
+        return false;
+    }
+
+    return true;
+
+}
+
+
+glm::vec3 getCameraForward(){
+
+    const float cos_pitch = std::cos(camera_pitch);
+
+    const glm::vec3 direction{
+        std::cos(camera_yaw) * cos_pitch,
+        std::sin(camera_pitch),
+        std::sin(camera_yaw) * cos_pitch
+    };
+
+    return glm::normalize(direction);
+
+}
+
+
+bool updateUniformBuffers(){
 
     auto& context = graphics::internal::context;
 
@@ -417,16 +610,11 @@ bool updateUniformBuffer(){
 
     const glm::mat4 model = translation * rotation * scaling;
     
-    const float horizontal_radius = camera_distance * std::cos(camera_pitch);
-    const glm::vec3 camera_position(
-        horizontal_radius * std::sin(camera_yaw),
-        camera_distance * std::sin(camera_pitch),
-        horizontal_radius * std::cos(camera_yaw)
-    );
+    const glm::vec3 camera_forward = getCameraForward();
 
     const glm::mat4 view = glm::lookAtRH(
         camera_position,
-        glm::vec3(0.0f, 0.0f, 0.0f),
+        camera_position + camera_forward,
         glm::vec3(0.0f, 1.0f, 0.0f)
     );
 
@@ -435,7 +623,7 @@ bool updateUniformBuffer(){
     if (projection_type == 0){
 
         projection = glm::perspectiveRH_ZO(
-            glm::radians(45.0f), // вертикальный угол обзора
+            glm::radians(camera_fov_degrees), // вертикальный угол обзора
             aspect,             // ширина окна / высота окна
             0.1f,               // ближняя граница видимости
             100.0f              // дальняя граница видимости
@@ -458,35 +646,105 @@ bool updateUniformBuffer(){
     }
 
     projection[1][1] *= -1.0f;
-    const glm::mat4 matrix = projection * view * model;
 
-    GlobalUniforms uniforms{};
+    const glm::mat4 view_projection = projection * view;
+
+    SceneUniforms scene_uniforms{};
+
     std::memcpy(
-        uniforms.matrix,
-        glm::value_ptr(matrix),
-        sizeof(uniforms.matrix)
+        scene_uniforms.view_projection,
+        glm::value_ptr(view_projection),
+        sizeof(scene_uniforms.view_projection)
     );
 
-    uniforms.base_color[0] = object_color.r;
-    uniforms.base_color[1] = object_color.g;
-    uniforms.base_color[2] = object_color.b;
-    uniforms.base_color[3] = 1.0f;
+    scene_uniforms.camera_position[0] = camera_position.x;
+    scene_uniforms.camera_position[1] = camera_position.y;
+    scene_uniforms.camera_position[2] = camera_position.z;
+    scene_uniforms.camera_position[3] = 1.0f;
+
+
+    scene_uniforms.camera_direction[0] = camera_forward.x;
+    scene_uniforms.camera_direction[1] = camera_forward.y;
+    scene_uniforms.camera_direction[2] = camera_forward.z;
+    scene_uniforms.camera_direction[3] = static_cast<float>(projection_type);
+
+
+    ModelUniforms model_uniforms{};
+
+    glm::vec3 light_direction = directional_light_direction;
+
+    if (glm::dot(light_direction, light_direction) < 0.000001f) {
+        light_direction = glm::vec3(0.0f, -1.0f, 0.0f);
+    }
+
+    light_direction = glm::normalize(light_direction);
+
+
+    scene_uniforms.directional_light_direction[0] = light_direction.x;
+    scene_uniforms.directional_light_direction[1] = light_direction.y;
+    scene_uniforms.directional_light_direction[2] = light_direction.z;
+    scene_uniforms.directional_light_direction[3] = 0.0f;
+
+
+    scene_uniforms.directional_light_color[0] = directional_light_color.r;
+    scene_uniforms.directional_light_color[1] = directional_light_color.g;
+    scene_uniforms.directional_light_color[2] = directional_light_color.b;
+    scene_uniforms.directional_light_color[3] = directional_light_intensity;
+
+
+    scene_uniforms.ambient_light[0] = ambient_light_color.r;
+    scene_uniforms.ambient_light[1] = ambient_light_color.g;
+    scene_uniforms.ambient_light[2] = ambient_light_color.b;
+    scene_uniforms.ambient_light[3] = ambient_light_intensity;
+
+
+    scene_uniforms.light_counts[0] = static_cast<std::uint32_t>(point_lights.size());
+
+
+    std::memcpy(
+        model_uniforms.model,
+        glm::value_ptr(model),
+        sizeof(model_uniforms.model)
+    );
+
+
+    model_uniforms.base_color[0] = object_color.r;
+    model_uniforms.base_color[1] = object_color.g;
+    model_uniforms.base_color[2] = object_color.b;
+    model_uniforms.base_color[3] = 1.0f;
+
+
+    model_uniforms.specular[0] = object_specular_color.r;
+    model_uniforms.specular[1] = object_specular_color.g;
+    model_uniforms.specular[2] = object_specular_color.b;
+    model_uniforms.specular[3] = object_shininess;
 
 
     VkResult result = vmaCopyMemoryToAllocation(
         context.allocator,
-        &uniforms,
-        uniform_allocation,
+        &scene_uniforms,
+        scene_uniform_allocation,
         0,
-        sizeof(uniforms)
+        sizeof(scene_uniforms)
     );
 
-
     if (result != VK_SUCCESS) {
-        std::cerr << "Cannot update uniform buffer\n";
+        std::cerr << "Cannot update scene uniform buffer\n";
         return false;
     }
 
+    result = vmaCopyMemoryToAllocation(
+        context.allocator,
+        &model_uniforms,
+        model_uniform_allocation,
+        0,
+        sizeof(model_uniforms)
+    );
+
+    if (result != VK_SUCCESS) {
+        std::cerr << "Cannot update model uniform buffer\n";
+        return false;
+    }
 
     return true;
 
@@ -527,6 +785,18 @@ VkVertexInputAttributeDescription getColorAttribute() {
 }
 
 
+VkVertexInputAttributeDescription getNormalAttribute() {
+    VkVertexInputAttributeDescription attribute{};
+
+    attribute.location = 2;
+    attribute.binding = 0;
+    attribute.format = VK_FORMAT_R32G32B32_SFLOAT;
+    attribute.offset = offsetof(Vertex, normal);
+
+    return attribute;
+}
+
+
 bool createPipeline(){
     auto& context = graphics::internal::context;
 
@@ -548,7 +818,8 @@ bool createPipeline(){
     auto binding = getVertexBinding();
     VkVertexInputAttributeDescription attributes[] = {
         getPositionAttribute(),
-        getColorAttribute()
+        getColorAttribute(),
+        getNormalAttribute()
     };
 
 
@@ -556,7 +827,7 @@ bool createPipeline(){
     vertex_input.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     vertex_input.vertexBindingDescriptionCount = 1;
     vertex_input.pVertexBindingDescriptions = &binding;
-    vertex_input.vertexAttributeDescriptionCount = 2;
+    vertex_input.vertexAttributeDescriptionCount = 3;
     vertex_input.pVertexAttributeDescriptions = attributes;
 
 
@@ -612,10 +883,15 @@ bool createPipeline(){
     blending.pAttachments = &color_attachment;
 
 
+    VkDescriptorSetLayout set_layouts[] = {
+        scene_descriptor_set_layout,
+        model_descriptor_set_layout
+    };
+
     VkPipelineLayoutCreateInfo layout_info{};
     layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    layout_info.setLayoutCount = 1;
-    layout_info.pSetLayouts = &descriptor_set_layout;
+    layout_info.setLayoutCount = 2;
+    layout_info.pSetLayouts = set_layouts;
 
 
     VkResult result = vkCreatePipelineLayout(
@@ -664,62 +940,85 @@ bool createPipeline(){
         return false;
     }
 
+    stages[0].module = light_vertex_shader;
+    stages[1].module = light_fragment_shader;
+    vertex_input.vertexAttributeDescriptionCount = 1;
+
+    result = vkCreateGraphicsPipelines(
+        context.device,
+        VK_NULL_HANDLE,
+        1,
+        &info,
+        nullptr,
+        &light_pipeline
+    );
+
+    if (result != VK_SUCCESS) {
+        std::cerr << "Cannot create light pipeline\n";
+        return false;
+    }
+
     return true;
 
 }
 
-
-bool createDescriptorSetLayout(){
+bool createDescriptorSetLayout(VkDescriptorSetLayout& result_layout,bool is_scene){
 
     auto& context = graphics::internal::context;
 
-    VkDescriptorSetLayoutBinding binding{};
-    binding.binding = 0;
-    binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    binding.descriptorCount = 1;
-    binding.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    VkDescriptorSetLayoutBinding bindings[2]{};
+
+
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+
+
+    bindings[1].binding = 1;
+    bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[1].descriptorCount = 1;
+    bindings[1].stageFlags =
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
 
     VkDescriptorSetLayoutCreateInfo layout_info{};
     layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layout_info.bindingCount = 1;
-    layout_info.pBindings = &binding;
+    layout_info.bindingCount = is_scene ? 2 : 1;
+    layout_info.pBindings = bindings;
 
-
-    VkResult result = vkCreateDescriptorSetLayout(
+    const VkResult result = vkCreateDescriptorSetLayout(
         context.device,
         &layout_info,
         nullptr,
-        &descriptor_set_layout
+        &result_layout
     );
-
 
     if (result != VK_SUCCESS) {
         std::cerr << "Cannot create descriptor set layout\n";
         return false;
     }
 
-
     return true;
 }
 
 
-bool createDescriptorSet(){
+bool createDescriptorSets() {
 
     auto& context = graphics::internal::context;
 
+    VkDescriptorPoolSize pool_sizes[2]{};
 
-    VkDescriptorPoolSize pool_size{};
-    pool_size.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    pool_size.descriptorCount = 1;
-
+    pool_sizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    pool_sizes[0].descriptorCount = 2;
+    pool_sizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    pool_sizes[1].descriptorCount = 1;
 
     VkDescriptorPoolCreateInfo pool_info{};
     pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    pool_info.maxSets = 1;
-    pool_info.poolSizeCount = 1;
-    pool_info.pPoolSizes = &pool_size;
-
+    pool_info.maxSets = 2;
+    pool_info.poolSizeCount = 2;
+    pool_info.pPoolSizes = pool_sizes;
 
     VkResult result = vkCreateDescriptorPool(
         context.device,
@@ -728,59 +1027,82 @@ bool createDescriptorSet(){
         &descriptor_pool
     );
 
-
     if (result != VK_SUCCESS) {
         std::cerr << "Cannot create descriptor pool\n";
         return false;
     }
 
+    VkDescriptorSetLayout layouts[] = {
+        scene_descriptor_set_layout,
+        model_descriptor_set_layout
+    };
+
+    VkDescriptorSet sets[2]{};
 
     VkDescriptorSetAllocateInfo allocate_info{};
     allocate_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     allocate_info.descriptorPool = descriptor_pool;
-    allocate_info.descriptorSetCount = 1;
-    allocate_info.pSetLayouts = &descriptor_set_layout;
-
+    allocate_info.descriptorSetCount = 2;
+    allocate_info.pSetLayouts = layouts;
 
     result = vkAllocateDescriptorSets(
         context.device,
         &allocate_info,
-        &descriptor_set
+        sets
     );
 
-
     if (result != VK_SUCCESS) {
-        std::cerr << "Cannot allocate descriptor set\n";
+        std::cerr << "Cannot allocate descriptor sets\n";
         return false;
     }
 
+    scene_descriptor_set = sets[0];
+    model_descriptor_set = sets[1];
 
-    VkDescriptorBufferInfo buffer_info{};
-    buffer_info.buffer = uniform_buffer;
-    buffer_info.offset = 0;
-    buffer_info.range = sizeof(GlobalUniforms);
+     VkDescriptorBufferInfo buffer_infos[3]{};
 
+    buffer_infos[0].buffer = scene_uniform_buffer;
+    buffer_infos[0].offset = 0;
+    buffer_infos[0].range = sizeof(SceneUniforms);
 
-    VkWriteDescriptorSet write{};
-    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = descriptor_set;
-    write.dstBinding = 0;
-    write.descriptorCount = 1;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    write.pBufferInfo = &buffer_info;
+    buffer_infos[1].buffer = model_uniform_buffer;
+    buffer_infos[1].offset = 0;
+    buffer_infos[1].range = sizeof(ModelUniforms);
 
+    buffer_infos[2].buffer = point_light_buffer;
+    buffer_infos[2].offset = 0;
+    buffer_infos[2].range = VK_WHOLE_SIZE;
+
+    VkWriteDescriptorSet writes[3]{};
+
+    for (std::uint32_t i = 0; i < 2; ++i) {
+        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[i].dstSet = sets[i];
+        writes[i].dstBinding = 0;
+        writes[i].descriptorCount = 1;
+        writes[i].descriptorType =
+            VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        writes[i].pBufferInfo = &buffer_infos[i];
+    }
+
+    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[2].dstSet = scene_descriptor_set;
+    writes[2].dstBinding = 1;
+    writes[2].descriptorCount = 1;
+    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[2].pBufferInfo = &buffer_infos[2];
 
     vkUpdateDescriptorSets(
         context.device,
-        1,
-        &write,
+        3,
+        writes,
         0,
         nullptr
     );
 
     return true;
-
 }
+
 
 bool initialize() {
 	
@@ -805,6 +1127,20 @@ bool initialize() {
         return false;
     }
 
+    light_vertex_shader = loadShader(SHADER_DIR "/light.vert.spv");
+
+    if (light_vertex_shader == VK_NULL_HANDLE) {
+        shutdown();
+        return false;
+    }
+
+    light_fragment_shader = loadShader(SHADER_DIR "/light.frag.spv");
+
+    if (light_fragment_shader == VK_NULL_HANDLE) {
+        shutdown();
+        return false;
+    }
+
     if (!createVertexBuffer()) {
         shutdown();
         return false;
@@ -815,17 +1151,42 @@ bool initialize() {
         return false;
     }
 
-    if (!createUniformBuffer()){
+    if (!createUniformBuffer(
+            sizeof(SceneUniforms),
+            scene_uniform_buffer,
+            scene_uniform_allocation)){
         shutdown();
         return false;
     }
 
-    if (!createDescriptorSetLayout()){
+    if (!createUniformBuffer(
+            sizeof(ModelUniforms),
+            model_uniform_buffer,
+            model_uniform_allocation)){
         shutdown();
         return false;
     }
 
-    if (!createDescriptorSet()) {
+    if (!createPointLightBuffer()){
+        shutdown();
+        return false;
+    }
+
+    if (!createDescriptorSetLayout(
+            scene_descriptor_set_layout,
+            true)) {
+        shutdown();
+        return false;
+    }
+
+    if (!createDescriptorSetLayout(
+            model_descriptor_set_layout,
+            false)) {
+        shutdown();
+        return false;
+    }
+
+    if (!createDescriptorSets()) {
         shutdown();
         return false;
     }
@@ -843,6 +1204,8 @@ void shutdown() {
 
 	auto& context = graphics::internal::context;
 	vkQueueWaitIdle(context.graphics_queue);
+
+    vkDestroyPipeline(context.device, light_pipeline, nullptr);
 
     vkDestroyPipeline(
         context.device, 
@@ -864,15 +1227,40 @@ void shutdown() {
 
     vkDestroyDescriptorSetLayout(
         context.device,
-        descriptor_set_layout,
+        scene_descriptor_set_layout,
         nullptr
     );
 
-    vmaDestroyBuffer(
-        context.allocator,
-        uniform_buffer,
-        uniform_allocation
+    vkDestroyDescriptorSetLayout(
+        context.device,
+        model_descriptor_set_layout,
+        nullptr
     );
+
+    if (scene_uniform_buffer != VK_NULL_HANDLE) {
+        vmaDestroyBuffer(
+        context.allocator,
+        scene_uniform_buffer,
+        scene_uniform_allocation
+        );
+    }
+
+    if (model_uniform_buffer != VK_NULL_HANDLE) {
+        vmaDestroyBuffer(
+        context.allocator,
+        model_uniform_buffer,
+        model_uniform_allocation
+        );
+    }
+
+    if (point_light_buffer != VK_NULL_HANDLE) {
+        vmaDestroyBuffer(
+            context.allocator,
+            point_light_buffer,
+            point_light_allocation
+        );
+    }
+
 
     vmaDestroyBuffer(
         context.allocator,
@@ -888,26 +1276,45 @@ void shutdown() {
 
 
     vkDestroyShaderModule(context.device, vertex_shader, nullptr);
-    vkDestroyShaderModule(context.device, fragment_shader, nullptr);    
+    vkDestroyShaderModule(context.device, fragment_shader, nullptr);
+    vkDestroyShaderModule(context.device, light_vertex_shader, nullptr);
+    vkDestroyShaderModule(context.device, light_fragment_shader, nullptr);
 
     graphics_pipeline = VK_NULL_HANDLE;
+    light_pipeline = VK_NULL_HANDLE;
     pipeline_layout = VK_NULL_HANDLE;
-    descriptor_set_layout = VK_NULL_HANDLE;
-    uniform_buffer = VK_NULL_HANDLE;
-    uniform_allocation = VK_NULL_HANDLE;
+
+    scene_descriptor_set_layout = VK_NULL_HANDLE;
+    model_descriptor_set_layout = VK_NULL_HANDLE;
+
+    scene_uniform_buffer = VK_NULL_HANDLE;
+    model_uniform_buffer = VK_NULL_HANDLE;
+
+    scene_uniform_allocation = VK_NULL_HANDLE;
+    model_uniform_allocation = VK_NULL_HANDLE;
+
+    scene_descriptor_set = VK_NULL_HANDLE;
+    model_descriptor_set = VK_NULL_HANDLE;
+
     vertex_buffer = VK_NULL_HANDLE;
     vertex_allocation = VK_NULL_HANDLE;
+
     index_buffer = VK_NULL_HANDLE;
     index_allocation = VK_NULL_HANDLE;
+
     fragment_shader = VK_NULL_HANDLE;
     vertex_shader = VK_NULL_HANDLE;
-    descriptor_pool = VK_NULL_HANDLE;
-    descriptor_set = VK_NULL_HANDLE;
+    light_vertex_shader = VK_NULL_HANDLE;
+    light_fragment_shader = VK_NULL_HANDLE;
 
+    descriptor_pool = VK_NULL_HANDLE;
+
+    point_light_buffer = VK_NULL_HANDLE;
+    point_light_allocation = VK_NULL_HANDLE;
 
 }
 
-void update(double time, float camera_horizontal, float camera_vertical){
+void update(double time, const CameraInput& camera_input){
     
     static double previous_time = time;
 
@@ -919,16 +1326,39 @@ void update(double time, float camera_horizontal, float camera_vertical){
 
     previous_time = time;
 
-    const float camera_speed = glm::radians(90.0f);
+    const float mouse_sensitivity = glm::radians(0.1f);
 
-    camera_yaw += camera_horizontal * camera_speed * delta_time;
-    camera_pitch += camera_vertical * camera_speed * delta_time;
+    camera_yaw += camera_input.mouse_delta_x * mouse_sensitivity;
+    camera_pitch += camera_input.mouse_delta_y * mouse_sensitivity;
+
+    camera_yaw = std::remainder(
+        camera_yaw,
+        glm::radians(360.0f)
+    );
 
     camera_pitch = std::clamp(
         camera_pitch,
         glm::radians(-85.0f),
         glm::radians(85.0f)
     );
+
+    const glm::vec3 world_up{0.0f, 1.0f, 0.0f};
+
+    const glm::vec3 forward = getCameraForward();
+
+    const glm::vec3 right = glm::normalize(
+        glm::cross(forward, world_up)
+    );
+
+    glm::vec3 movement = forward * camera_input.move_forward + right * camera_input.move_right;
+
+    if (glm::dot(movement, movement) > 0.0f) {
+        movement = glm::normalize(movement);
+    }
+
+    const float movement_speed = 2.5f;
+
+    camera_position += movement * movement_speed * delta_time;
 
     if (ImGui::Begin("Scene settings")) {
 
@@ -943,6 +1373,49 @@ void update(double time, float camera_horizontal, float camera_vertical){
             projection_names,
             2
         );
+
+
+        ImGui::Separator();
+        ImGui::Text("Camera");
+
+        ImGui::DragFloat3(
+            "Camera position",
+            glm::value_ptr(camera_position),
+            0.05f
+        );
+
+        ImGui::SliderAngle(
+            "Camera yaw",
+            &camera_yaw,
+            -180.0f,
+            180.0f
+        );
+
+        ImGui::SliderAngle(
+            "Camera pitch",
+            &camera_pitch,
+            -85.0f,
+            85.0f
+        );
+
+        ImGui::SliderFloat(
+            "Camera FOV",
+            &camera_fov_degrees,
+            20.0f,
+            100.0f,
+            "%.1f",
+            ImGuiSliderFlags_AlwaysClamp
+        );
+
+        if (ImGui::Button("Reset camera")) {
+            camera_position = glm::vec3(0.0f, 0.0f, 3.0f);
+
+            camera_yaw = glm::radians(-90.0f);
+            camera_pitch = glm::radians(0.0f);
+
+            camera_fov_degrees = 45.0f;
+        }
+
 
         ImGui::Separator();
         ImGui::Text("Object transform");
@@ -1009,12 +1482,123 @@ void update(double time, float camera_horizontal, float camera_vertical){
         }
 
         ImGui::Separator();
-        ImGui::Text("Object color");
+        ImGui::Text("Material");
 
         ImGui::ColorEdit3(
             "Base color",
             glm::value_ptr(object_color)
         );
+
+        ImGui::ColorEdit3(
+            "Specular color",
+            glm::value_ptr(object_specular_color)
+        );
+
+        ImGui::SliderFloat(
+            "Shininess",
+            &object_shininess,
+            1.0f,
+            256.0f,
+            "%.1f",
+            ImGuiSliderFlags_AlwaysClamp
+        );
+
+
+        ImGui::Separator();
+        ImGui::Text("Directional light");
+
+        ImGui::DragFloat3(
+            "Light ray direction",
+            glm::value_ptr(directional_light_direction),
+            0.02f
+        );
+
+        ImGui::ColorEdit3(
+            "Light color",
+            glm::value_ptr(directional_light_color)
+        );
+
+        ImGui::SliderFloat(
+            "Light intensity",
+            &directional_light_intensity,
+            0.0f,
+            3.0f,
+            "%.2f",
+            ImGuiSliderFlags_AlwaysClamp
+        );
+
+        ImGui::Separator();
+        ImGui::Text("Ambient light");
+
+        ImGui::ColorEdit3(
+            "Ambient color",
+            glm::value_ptr(ambient_light_color)
+        );
+
+        ImGui::SliderFloat(
+            "Ambient intensity",
+            &ambient_light_intensity,
+            0.0f,
+            1.0f,
+            "%.2f",
+            ImGuiSliderFlags_AlwaysClamp
+        );
+
+        ImGui::Separator();
+        ImGui::Text("Point lights");
+
+        ImGui::Checkbox("Show light sources", &show_light_sources);
+
+        ImGui::BeginDisabled(point_lights.size() >= MAX_POINT_LIGHTS);
+
+        if (ImGui::Button("Add point light")) {
+            point_lights.emplace_back();
+        }
+
+        ImGui::EndDisabled();
+
+        int point_light_to_remove = -1;
+
+        for (std::size_t i = 0; i < point_lights.size(); ++i) {
+            ImGui::PushID(static_cast<int>(i));
+
+            auto& light = point_lights[i];
+
+            ImGui::Separator();
+            ImGui::Text("Point light %d", static_cast<int>(i + 1));
+
+            ImGui::DragFloat3(
+                "Position",
+                glm::value_ptr(light.position),
+                0.05f
+            );
+
+            ImGui::ColorEdit3(
+                "Color",
+                glm::value_ptr(light.color)
+            );
+
+            ImGui::SliderFloat(
+                "Intensity",
+                &light.intensity,
+                0.0f,
+                20.0f,
+                "%.2f",
+                ImGuiSliderFlags_AlwaysClamp
+            );
+
+            if (ImGui::Button("Delete point light")) {
+                point_light_to_remove = static_cast<int>(i);
+            }
+
+            ImGui::PopID();
+        }
+
+        if (point_light_to_remove >= 0) {
+
+            point_lights.erase(point_lights.begin() + point_light_to_remove);
+
+        }
 
 
     }
@@ -1031,7 +1615,9 @@ void render(const graphics::internal::FrameData& fd) {
 	
     auto& context = graphics::internal::context;
     VkCommandBuffer command_buffer = fd.command_buffer;
-    const bool uniforms_ready = updateUniformBuffer();
+
+    const bool point_lights_ready = updatePointLightBuffer();
+    const bool uniforms_ready = point_lights_ready && updateUniformBuffers();
 
     vkResetCommandBuffer(command_buffer, 0);
     VkCommandBufferBeginInfo begin_info{};
@@ -1103,13 +1689,20 @@ void render(const graphics::internal::FrameData& fd) {
         VK_INDEX_TYPE_UINT16
     );
 
+
+    VkDescriptorSet sets[] = {
+        scene_descriptor_set,
+        model_descriptor_set
+    };
+
+
     vkCmdBindDescriptorSets(
         command_buffer,
         VK_PIPELINE_BIND_POINT_GRAPHICS,
         pipeline_layout,
         0,
-        1,
-        &descriptor_set,
+        2,
+        sets,
         0,
         nullptr
     );
@@ -1123,6 +1716,34 @@ void render(const graphics::internal::FrameData& fd) {
             command_buffer,
             static_cast<std::uint32_t>(cube_mesh.indices.size()),
             1,
+            0,
+            0,
+            0
+        );
+    }
+
+    if (uniforms_ready && show_light_sources && !point_lights.empty()) {
+        vkCmdBindPipeline(
+            command_buffer,
+            VK_PIPELINE_BIND_POINT_GRAPHICS,
+            light_pipeline
+        );
+
+        vkCmdBindDescriptorSets(
+            command_buffer,
+            VK_PIPELINE_BIND_POINT_GRAPHICS,
+            pipeline_layout,
+            0,
+            1,
+            &scene_descriptor_set,
+            0,
+            nullptr
+        );
+
+        vkCmdDrawIndexed(
+            command_buffer,
+            static_cast<std::uint32_t>(cube_mesh.indices.size()),
+            static_cast<std::uint32_t>(point_lights.size()),
             0,
             0,
             0

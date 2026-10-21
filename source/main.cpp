@@ -21,6 +21,11 @@ constexpr char default_window_title[] = "Vulkan Starter App";
 
 GLFWwindow* glfw_window;
 
+bool camera_mouse_captured = false;
+
+double previous_cursor_x = 0.0;
+double previous_cursor_y = 0.0;
+
 } // namespace
 
 int main() {
@@ -78,38 +83,84 @@ int main() {
 
 		glfwPollEvents();
 		ImGui_ImplGlfw_NewFrame();
+        ImGui::NewFrame();
 
-		ImGui::NewFrame();
+        application::CameraInput camera_input{};
 
-        float camera_horizontal = 0.0f;
-        float camera_vertical = 0.0f;
+        const ImGuiIO& io = ImGui::GetIO();
 
+        const bool window_focused = glfwGetWindowAttrib(glfw_window, GLFW_FOCUSED) == GLFW_TRUE;
 
-        if (!ImGui::GetIO().WantCaptureKeyboard) {
-            if (glfwGetKey(glfw_window, GLFW_KEY_A) == GLFW_PRESS) {
-                camera_horizontal -= 1.0f;
-            }
+        const bool wants_mouse_look = window_focused && glfwGetMouseButton(
+                glfw_window,
+                GLFW_MOUSE_BUTTON_RIGHT
+            ) == GLFW_PRESS && (camera_mouse_captured || !io.WantCaptureMouse);
 
-            if (glfwGetKey(glfw_window, GLFW_KEY_D) == GLFW_PRESS) {
-                camera_horizontal += 1.0f;
-            }
+        if (wants_mouse_look != camera_mouse_captured) {
+            camera_mouse_captured = wants_mouse_look;
 
+            glfwSetInputMode(
+                glfw_window,
+                GLFW_CURSOR,
+                camera_mouse_captured
+                    ? GLFW_CURSOR_DISABLED
+                    : GLFW_CURSOR_NORMAL
+            );
+
+            glfwGetCursorPos(
+                glfw_window,
+                &previous_cursor_x,
+                &previous_cursor_y
+            );
+        }
+
+        double cursor_x = 0.0;
+        double cursor_y = 0.0;
+
+        glfwGetCursorPos(
+            glfw_window,
+            &cursor_x,
+            &cursor_y
+        );
+
+        if (camera_mouse_captured) {
+            camera_input.mouse_delta_x =
+                static_cast<float>(cursor_x - previous_cursor_x);
+
+            camera_input.mouse_delta_y =
+                static_cast<float>(previous_cursor_y - cursor_y);
+        }
+
+        previous_cursor_x = cursor_x;
+        previous_cursor_y = cursor_y;
+
+        if (window_focused && !io.WantCaptureKeyboard) {
             if (glfwGetKey(glfw_window, GLFW_KEY_W) == GLFW_PRESS) {
-                camera_vertical += 1.0f;
+                camera_input.move_forward += 1.0f;
             }
 
             if (glfwGetKey(glfw_window, GLFW_KEY_S) == GLFW_PRESS) {
-                camera_vertical -= 1.0f;
+                camera_input.move_forward -= 1.0f;
             }
+
+            if (glfwGetKey(glfw_window, GLFW_KEY_D) == GLFW_PRESS) {
+                camera_input.move_right += 1.0f;
+            }
+
+            if (glfwGetKey(glfw_window, GLFW_KEY_A) == GLFW_PRESS) {
+                camera_input.move_right -= 1.0f;
+            }
+
         }
 
-
-        application::update(time, camera_horizontal, camera_vertical);
+    
+        application::update(time, camera_input);
         ImGui::Render();
 
 		graphics::internal::FrameData fd = graphics::internal::prepare();
 		application::render(fd);
 		graphics::internal::submitAndPresent();
+
 	}
 
 	application::shutdown();
