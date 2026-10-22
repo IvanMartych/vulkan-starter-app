@@ -25,6 +25,8 @@ VkShaderModule vertex_shader = VK_NULL_HANDLE;
 VkShaderModule fragment_shader = VK_NULL_HANDLE;
 VkShaderModule light_vertex_shader = VK_NULL_HANDLE;
 VkShaderModule light_fragment_shader = VK_NULL_HANDLE;
+VkShaderModule spot_light_vertex_shader = VK_NULL_HANDLE;
+VkShaderModule spot_cone_vertex_shader = VK_NULL_HANDLE;
 
 VkBuffer vertex_buffer = VK_NULL_HANDLE;
 VkBuffer index_buffer = VK_NULL_HANDLE;
@@ -49,9 +51,13 @@ VkDescriptorSet model_descriptor_set = VK_NULL_HANDLE;
 VkPipelineLayout pipeline_layout = VK_NULL_HANDLE;
 VkPipeline graphics_pipeline = VK_NULL_HANDLE;
 VkPipeline light_pipeline = VK_NULL_HANDLE;
+VkPipeline spot_light_pipeline = VK_NULL_HANDLE;
+VkPipeline spot_cone_pipeline = VK_NULL_HANDLE;
 
 VkBuffer point_light_buffer = VK_NULL_HANDLE;
 VmaAllocation point_light_allocation = VK_NULL_HANDLE;
+VkBuffer spot_light_buffer = VK_NULL_HANDLE;
+VmaAllocation spot_light_allocation = VK_NULL_HANDLE;
 
 
 glm::vec3 camera_position{0.0f, 0.0f, 3.0f};
@@ -84,6 +90,8 @@ float directional_light_intensity = 1.0f;
 glm::vec3 ambient_light_color{1.0f};
 float ambient_light_intensity = 0.15f;
 bool show_light_sources = true;
+bool show_spot_light_sources = true;
+bool show_spot_light_cones = true;
 
 
 struct PointLight {
@@ -100,6 +108,35 @@ struct alignas(16) PointLightData {
 constexpr std::size_t MAX_POINT_LIGHTS = 100;
 
 std::vector<PointLight> point_lights{PointLight{}};
+
+struct SpotLight {
+    glm::vec3 position{1.2f, 1.5f, 2.0f};
+    glm::vec3 direction{-1.2f, -1.5f, -2.0f};
+    glm::vec3 color{1.0f, 1.0f, 1.0f};
+    float intensity = 5.0f;
+
+
+    float inner_angle_degrees = 15.0f;
+    float outer_angle_degrees = 25.0f;
+    float cone_display_length = 3.0f;
+};
+
+struct alignas(16) SpotLightData {
+    float position[4];
+    float color[4];
+    float direction[4];
+    float cone[4]; // cos(inner angle), cos(outer angle)
+};
+
+static_assert(sizeof(SpotLightData) == 64);
+static_assert(offsetof(SpotLightData, cone) == 48);
+
+constexpr std::size_t MAX_SPOT_LIGHTS = 100;
+std::vector<SpotLight> spot_lights{SpotLight{}};
+
+// Two circles with 48 line segments each, four cone sides and one axis.
+// The segment count must match spot_cone.vert.
+constexpr std::uint32_t SPOT_CONE_VERTEX_COUNT = 2 * 48 * 2 + 4 * 2 + 2;
 
 
 struct Vertex {
@@ -532,6 +569,105 @@ bool updatePointLightBuffer() {
 }
 
 
+bool createSpotLightBuffer() {
+    auto& context = graphics::internal::context;
+
+    VkBufferCreateInfo buffer_info{};
+    buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    buffer_info.size = MAX_SPOT_LIGHTS * sizeof(SpotLightData);
+    buffer_info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VmaAllocationCreateInfo allocation_info{};
+    allocation_info.usage = VMA_MEMORY_USAGE_AUTO;
+    allocation_info.flags =
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+
+    const VkResult result = vmaCreateBuffer(
+        context.allocator,
+        &buffer_info,
+        &allocation_info,
+        &spot_light_buffer,
+        &spot_light_allocation,
+        nullptr
+    );
+
+    if (result != VK_SUCCESS) {
+        std::cerr << "Cannot create spot light buffer\n";
+        return false;
+    }
+
+    return true;
+}
+
+
+bool updateSpotLightBuffer() {
+    
+    if (spot_lights.size() > MAX_SPOT_LIGHTS) {
+        std::cerr << "Too many spot lights\n";
+        return false;
+    }
+
+    if (spot_lights.empty()) {
+        return true;
+    }
+
+    std::vector<SpotLightData> data(spot_lights.size());
+
+    for (std::size_t i = 0; i < spot_lights.size(); ++i) {
+        const auto& light = spot_lights[i];
+
+        glm::vec3 direction = light.direction;
+        if (glm::dot(direction, direction) < 0.000001f) {
+            direction = glm::vec3(0.0f, 0.0f, -1.0f);
+        }
+        direction = glm::normalize(direction);
+
+        const float outer_angle = std::clamp(
+            light.outer_angle_degrees, 0.0f, 89.0f
+        );
+        const float inner_angle = std::clamp(
+            light.inner_angle_degrees, 0.0f, outer_angle
+        );
+
+        data[i].position[0] = light.position.x;
+        data[i].position[1] = light.position.y;
+        data[i].position[2] = light.position.z;
+        data[i].position[3] = 1.0f;
+
+        data[i].color[0] = light.color.r;
+        data[i].color[1] = light.color.g;
+        data[i].color[2] = light.color.b;
+        data[i].color[3] = std::max(light.intensity, 0.0f);
+
+        data[i].direction[0] = direction.x;
+        data[i].direction[1] = direction.y;
+        data[i].direction[2] = direction.z;
+        data[i].direction[3] = 0.0f;
+
+        data[i].cone[0] = std::cos(glm::radians(inner_angle));
+        data[i].cone[1] = std::cos(glm::radians(outer_angle));
+        data[i].cone[2] = std::clamp(light.cone_display_length, 0.2f, 10.0f);
+    }
+
+    auto& context = graphics::internal::context;
+
+    const VkResult result = vmaCopyMemoryToAllocation(
+        context.allocator,
+        data.data(),
+        spot_light_allocation,
+        0,
+        data.size() * sizeof(SpotLightData)
+    );
+
+    if (result != VK_SUCCESS) {
+        std::cerr << "Cannot update spot light buffer\n";
+        return false;
+    }
+
+    return true;
+}
+
 glm::vec3 getCameraForward(){
 
     const float cos_pitch = std::cos(camera_pitch);
@@ -699,6 +835,7 @@ bool updateUniformBuffers(){
 
 
     scene_uniforms.light_counts[0] = static_cast<std::uint32_t>(point_lights.size());
+    scene_uniforms.light_counts[1] = static_cast<std::uint32_t>(spot_lights.size());
 
 
     std::memcpy(
@@ -958,6 +1095,33 @@ bool createPipeline(){
         return false;
     }
 
+    stages[0].module = spot_light_vertex_shader;
+
+    result = vkCreateGraphicsPipelines(
+        context.device, VK_NULL_HANDLE, 1, &info, nullptr, &spot_light_pipeline
+    );
+
+    if (result != VK_SUCCESS) {
+        std::cerr << "Cannot create spot light marker pipeline\n";
+        return false;
+    }
+
+    stages[0].module = spot_cone_vertex_shader;
+    // Cone vertices are generated by the shader using gl_VertexIndex.
+    vertex_input.vertexBindingDescriptionCount = 0;
+    vertex_input.vertexAttributeDescriptionCount = 0;
+    assembly.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
+    depth.depthWriteEnable = VK_FALSE;
+
+    result = vkCreateGraphicsPipelines(
+        context.device, VK_NULL_HANDLE, 1, &info, nullptr, &spot_cone_pipeline
+    );
+
+    if (result != VK_SUCCESS) {
+        std::cerr << "Cannot create spot light cone pipeline\n";
+        return false;
+    }
+
     return true;
 
 }
@@ -966,7 +1130,7 @@ bool createDescriptorSetLayout(VkDescriptorSetLayout& result_layout,bool is_scen
 
     auto& context = graphics::internal::context;
 
-    VkDescriptorSetLayoutBinding bindings[2]{};
+    VkDescriptorSetLayoutBinding bindings[3]{};
 
 
     bindings[0].binding = 0;
@@ -981,10 +1145,15 @@ bool createDescriptorSetLayout(VkDescriptorSetLayout& result_layout,bool is_scen
     bindings[1].stageFlags =
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
+    bindings[2].binding = 2;
+    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    bindings[2].descriptorCount = 1;
+    bindings[2].stageFlags =
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutCreateInfo layout_info{};
     layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    layout_info.bindingCount = is_scene ? 2 : 1;
+    layout_info.bindingCount = is_scene ? 3 : 1;
     layout_info.pBindings = bindings;
 
     const VkResult result = vkCreateDescriptorSetLayout(
@@ -1012,7 +1181,7 @@ bool createDescriptorSets() {
     pool_sizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     pool_sizes[0].descriptorCount = 2;
     pool_sizes[1].type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    pool_sizes[1].descriptorCount = 1;
+    pool_sizes[1].descriptorCount = 2;
 
     VkDescriptorPoolCreateInfo pool_info{};
     pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
@@ -1059,7 +1228,7 @@ bool createDescriptorSets() {
     scene_descriptor_set = sets[0];
     model_descriptor_set = sets[1];
 
-     VkDescriptorBufferInfo buffer_infos[3]{};
+    VkDescriptorBufferInfo buffer_infos[4]{};
 
     buffer_infos[0].buffer = scene_uniform_buffer;
     buffer_infos[0].offset = 0;
@@ -1073,7 +1242,11 @@ bool createDescriptorSets() {
     buffer_infos[2].offset = 0;
     buffer_infos[2].range = VK_WHOLE_SIZE;
 
-    VkWriteDescriptorSet writes[3]{};
+    buffer_infos[3].buffer = spot_light_buffer;
+    buffer_infos[3].offset = 0;
+    buffer_infos[3].range = VK_WHOLE_SIZE;
+
+    VkWriteDescriptorSet writes[4]{};
 
     for (std::uint32_t i = 0; i < 2; ++i) {
         writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -1092,9 +1265,16 @@ bool createDescriptorSets() {
     writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     writes[2].pBufferInfo = &buffer_infos[2];
 
+    writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[3].dstSet = scene_descriptor_set;
+    writes[3].dstBinding = 2;
+    writes[3].descriptorCount = 1;
+    writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[3].pBufferInfo = &buffer_infos[3];
+
     vkUpdateDescriptorSets(
         context.device,
-        3,
+        4,
         writes,
         0,
         nullptr
@@ -1141,6 +1321,20 @@ bool initialize() {
         return false;
     }
 
+    spot_light_vertex_shader = loadShader(SHADER_DIR "/spot_light.vert.spv");
+
+    if (spot_light_vertex_shader == VK_NULL_HANDLE) {
+        shutdown();
+        return false;
+    }
+
+    spot_cone_vertex_shader = loadShader(SHADER_DIR "/spot_cone.vert.spv");
+
+    if (spot_cone_vertex_shader == VK_NULL_HANDLE) {
+        shutdown();
+        return false;
+    }
+
     if (!createVertexBuffer()) {
         shutdown();
         return false;
@@ -1168,6 +1362,11 @@ bool initialize() {
     }
 
     if (!createPointLightBuffer()){
+        shutdown();
+        return false;
+    }
+
+    if (!createSpotLightBuffer()) {
         shutdown();
         return false;
     }
@@ -1205,6 +1404,8 @@ void shutdown() {
 	auto& context = graphics::internal::context;
 	vkQueueWaitIdle(context.graphics_queue);
 
+    vkDestroyPipeline(context.device, spot_cone_pipeline, nullptr);
+    vkDestroyPipeline(context.device, spot_light_pipeline, nullptr);
     vkDestroyPipeline(context.device, light_pipeline, nullptr);
 
     vkDestroyPipeline(
@@ -1261,6 +1462,13 @@ void shutdown() {
         );
     }
 
+    if (spot_light_buffer != VK_NULL_HANDLE) {
+        vmaDestroyBuffer(
+            context.allocator,
+            spot_light_buffer,
+            spot_light_allocation
+        );
+    }
 
     vmaDestroyBuffer(
         context.allocator,
@@ -1279,9 +1487,13 @@ void shutdown() {
     vkDestroyShaderModule(context.device, fragment_shader, nullptr);
     vkDestroyShaderModule(context.device, light_vertex_shader, nullptr);
     vkDestroyShaderModule(context.device, light_fragment_shader, nullptr);
+    vkDestroyShaderModule(context.device, spot_light_vertex_shader, nullptr);
+    vkDestroyShaderModule(context.device, spot_cone_vertex_shader, nullptr);
 
     graphics_pipeline = VK_NULL_HANDLE;
     light_pipeline = VK_NULL_HANDLE;
+    spot_light_pipeline = VK_NULL_HANDLE;
+    spot_cone_pipeline = VK_NULL_HANDLE;
     pipeline_layout = VK_NULL_HANDLE;
 
     scene_descriptor_set_layout = VK_NULL_HANDLE;
@@ -1306,11 +1518,15 @@ void shutdown() {
     vertex_shader = VK_NULL_HANDLE;
     light_vertex_shader = VK_NULL_HANDLE;
     light_fragment_shader = VK_NULL_HANDLE;
+    spot_light_vertex_shader = VK_NULL_HANDLE;
+    spot_cone_vertex_shader = VK_NULL_HANDLE;
 
     descriptor_pool = VK_NULL_HANDLE;
 
     point_light_buffer = VK_NULL_HANDLE;
     point_light_allocation = VK_NULL_HANDLE;
+    spot_light_buffer = VK_NULL_HANDLE;
+    spot_light_allocation = VK_NULL_HANDLE;
 
 }
 
@@ -1547,7 +1763,7 @@ void update(double time, const CameraInput& camera_input){
         ImGui::Separator();
         ImGui::Text("Point lights");
 
-        ImGui::Checkbox("Show light sources", &show_light_sources);
+        ImGui::Checkbox("Show point light markers", &show_light_sources);
 
         ImGui::BeginDisabled(point_lights.size() >= MAX_POINT_LIGHTS);
 
@@ -1600,6 +1816,69 @@ void update(double time, const CameraInput& camera_input){
 
         }
 
+        ImGui::Separator();
+        if (ImGui::CollapsingHeader("Spot lights", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::PushID("spot_lights");
+
+            ImGui::Checkbox("Show spot light markers", &show_spot_light_sources);
+            ImGui::Checkbox("Show spot light cones", &show_spot_light_cones);
+            ImGui::Text("Spot lights: %d / %d",
+                static_cast<int>(spot_lights.size()),
+                static_cast<int>(MAX_SPOT_LIGHTS));
+
+            ImGui::BeginDisabled(spot_lights.size() >= MAX_SPOT_LIGHTS);
+            if (ImGui::Button("Add spot light")) {
+                spot_lights.emplace_back();
+            }
+            ImGui::EndDisabled();
+
+            int spot_light_to_remove = -1;
+            for (std::size_t i = 0; i < spot_lights.size(); ++i) {
+                ImGui::PushID(static_cast<int>(i));
+                auto& light = spot_lights[i];
+
+                if (ImGui::TreeNodeEx("settings", ImGuiTreeNodeFlags_DefaultOpen,
+                        "Spot light %d", static_cast<int>(i + 1))) {
+                    ImGui::DragFloat3("Position", glm::value_ptr(light.position), 0.05f);
+                    ImGui::DragFloat3("Direction", glm::value_ptr(light.direction), 0.02f);
+
+                    if (ImGui::Button("Aim at origin")) {
+                        light.direction = -light.position;
+                    }
+                    if (ImGui::Button("Place at camera")) {
+                        light.position = camera_position;
+                        light.direction = getCameraForward();
+                    }
+
+                    ImGui::ColorEdit3("Color", glm::value_ptr(light.color));
+                    ImGui::SliderFloat("Intensity", &light.intensity, 0.0f, 20.0f,
+                        "%.2f", ImGuiSliderFlags_AlwaysClamp);
+
+                    ImGui::TextDisabled("Angles are measured from the cone axis.");
+                    ImGui::SliderFloat("Outer angle (deg)", &light.outer_angle_degrees,
+                        1.0f, 89.0f, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+                    light.inner_angle_degrees = std::clamp(
+                        light.inner_angle_degrees, 0.0f, light.outer_angle_degrees);
+                    ImGui::SliderFloat("Inner angle (deg)", &light.inner_angle_degrees,
+                        0.0f, light.outer_angle_degrees, "%.1f", ImGuiSliderFlags_AlwaysClamp);
+
+                    ImGui::SliderFloat("Cone display length", &light.cone_display_length,
+                        0.2f, 10.0f, "%.2f", ImGuiSliderFlags_AlwaysClamp);
+                    ImGui::TextWrapped("Display length only changes the guide lines, not the light range.");
+
+                    if (ImGui::Button("Delete spot light")) {
+                        spot_light_to_remove = static_cast<int>(i);
+                    }
+                    ImGui::TreePop();
+                }
+                ImGui::PopID();
+            }
+
+            if (spot_light_to_remove >= 0) {
+                spot_lights.erase(spot_lights.begin() + spot_light_to_remove);
+            }
+            ImGui::PopID();
+        }
 
     }
 
@@ -1617,7 +1896,9 @@ void render(const graphics::internal::FrameData& fd) {
     VkCommandBuffer command_buffer = fd.command_buffer;
 
     const bool point_lights_ready = updatePointLightBuffer();
-    const bool uniforms_ready = point_lights_ready && updateUniformBuffers();
+    const bool spot_lights_ready = updateSpotLightBuffer();
+    const bool uniforms_ready =
+        point_lights_ready && spot_lights_ready && updateUniformBuffers();
 
     vkResetCommandBuffer(command_buffer, 0);
     VkCommandBufferBeginInfo begin_info{};
@@ -1748,6 +2029,35 @@ void render(const graphics::internal::FrameData& fd) {
             0,
             0
         );
+    }
+
+    if (uniforms_ready && !spot_lights.empty()
+        && (show_spot_light_sources || show_spot_light_cones)) {
+        vkCmdBindDescriptorSets(
+            command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            pipeline_layout, 0, 1, &scene_descriptor_set, 0, nullptr
+        );
+
+        if (show_spot_light_sources) {
+            vkCmdBindPipeline(
+                command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, spot_light_pipeline
+            );
+            vkCmdDrawIndexed(
+                command_buffer,
+                static_cast<std::uint32_t>(cube_mesh.indices.size()),
+                static_cast<std::uint32_t>(spot_lights.size()), 0, 0, 0
+            );
+        }
+
+        if (show_spot_light_cones) {
+            vkCmdBindPipeline(
+                command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, spot_cone_pipeline
+            );
+            vkCmdDraw(
+                command_buffer, SPOT_CONE_VERTEX_COUNT,
+                static_cast<std::uint32_t>(spot_lights.size()), 0, 0
+            );
+        }
     }
 
     vkCmdEndRenderPass(command_buffer);

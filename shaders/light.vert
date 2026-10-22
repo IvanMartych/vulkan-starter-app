@@ -4,6 +4,7 @@ layout(location = 0) in vec3 in_position;
 layout(location = 0) out vec3 light_color;
 
 layout(std140, set = 0, binding = 0) uniform SceneUniforms {
+    
     mat4 view_projection;
     vec4 camera_position;
     vec4 camera_direction;
@@ -13,6 +14,7 @@ layout(std140, set = 0, binding = 0) uniform SceneUniforms {
     vec4 ambient_light;
 
     uvec4 light_counts;
+
 } scene_uniforms;
 
 struct PointLightData {
@@ -25,7 +27,7 @@ layout(std430, set = 0, binding = 1) readonly buffer PointLights {
 } point_light_buffer;
 
 void main() {
-    // Each instance reads the same source data as the lighting shader.
+
     PointLightData light = point_light_buffer.lights[gl_InstanceIndex];
 
     const float marker_size = 0.12;
@@ -33,4 +35,5 @@ void main() {
 
     gl_Position = scene_uniforms.view_projection * vec4(world_position, 1.0);
     light_color = light.color.rgb;
+
 }

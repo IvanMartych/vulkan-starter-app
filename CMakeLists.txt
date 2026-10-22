@@ -121,6 +121,8 @@ if(GLSLC_FOUND)
 	compile_shader(triangle.frag)
     compile_shader(light.vert)
     compile_shader(light.frag)
+    compile_shader(spot_light.vert)
+    compile_shader(spot_cone.vert)
 
 	add_custom_target(shaders DEPENDS ${_SHADER_BINARIES})
 	add_dependencies(${PROJECT_NAME} shaders)
