@@ -66,7 +66,7 @@ vec3 calculatePointLight(PointLightData light, vec3 normal, vec3 view_direction)
 
     vec3 light_direction = normalize(to_light);
 
-    vec3 light_color =light.color.rgb * light.color.w / distance_squared;
+    vec3 light_color = light.color.rgb * light.color.w / distance_squared;
 
     float diffuse_factor = max(dot(normal, light_direction), 0.0);
 
@@ -92,10 +92,8 @@ vec3 calculateSpotLight(SpotLightData light, vec3 normal, vec3 view_direction) {
         return vec3(0.0);
     }
 
-    // Surface-to-light direction for diffuse and specular lighting.
     vec3 light_direction = normalize(to_light);
 
-    // The cone uses the opposite direction: from the light to the surface.
     float cos_angle = dot(-light_direction, light.direction.xyz);
     float cos_inner = light.cone.x;
     float cos_outer = light.cone.y;
@@ -104,7 +102,6 @@ vec3 calculateSpotLight(SpotLightData light, vec3 normal, vec3 view_direction) {
     if (cos_inner > cos_outer) {
         cone_factor = smoothstep(cos_outer, cos_inner, cos_angle);
     } else {
-        // Equal cone angles describe a hard edge instead of a soft transition.
         cone_factor = step(cos_outer, cos_angle);
     }
 

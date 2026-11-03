@@ -134,8 +134,7 @@ static_assert(offsetof(SpotLightData, cone) == 48);
 constexpr std::size_t MAX_SPOT_LIGHTS = 100;
 std::vector<SpotLight> spot_lights{SpotLight{}};
 
-// Two circles with 48 line segments each, four cone sides and one axis.
-// The segment count must match spot_cone.vert.
+
 constexpr std::uint32_t SPOT_CONE_VERTEX_COUNT = 2 * 48 * 2 + 4 * 2 + 2;
 
 
@@ -569,7 +568,8 @@ bool updatePointLightBuffer() {
 }
 
 
-bool createSpotLightBuffer() {
+bool createSpotLightBuffer(){
+
     auto& context = graphics::internal::context;
 
     VkBufferCreateInfo buffer_info{};
@@ -580,8 +580,7 @@ bool createSpotLightBuffer() {
 
     VmaAllocationCreateInfo allocation_info{};
     allocation_info.usage = VMA_MEMORY_USAGE_AUTO;
-    allocation_info.flags =
-        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
+    allocation_info.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
 
     const VkResult result = vmaCreateBuffer(
         context.allocator,
@@ -1142,14 +1141,12 @@ bool createDescriptorSetLayout(VkDescriptorSetLayout& result_layout,bool is_scen
     bindings[1].binding = 1;
     bindings[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     bindings[1].descriptorCount = 1;
-    bindings[1].stageFlags =
-        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[1].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
     bindings[2].binding = 2;
     bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     bindings[2].descriptorCount = 1;
-    bindings[2].stageFlags =
-        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    bindings[2].stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
     VkDescriptorSetLayoutCreateInfo layout_info{};
     layout_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -1897,8 +1894,7 @@ void render(const graphics::internal::FrameData& fd) {
 
     const bool point_lights_ready = updatePointLightBuffer();
     const bool spot_lights_ready = updateSpotLightBuffer();
-    const bool uniforms_ready =
-        point_lights_ready && spot_lights_ready && updateUniformBuffers();
+    const bool uniforms_ready = point_lights_ready && spot_lights_ready && updateUniformBuffers();
 
     vkResetCommandBuffer(command_buffer, 0);
     VkCommandBufferBeginInfo begin_info{};
