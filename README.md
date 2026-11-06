@@ -1,5 +1,10 @@
 # 🌋 Vulkan Starter App
 
+## Лабораторная № 3
+
+Реализация текстурирования, динамического UBO, push-констант и карт материала:
+см. [LAB3.md](LAB3.md). Готовые текстуры включены в проект; их генерация для запуска не требуется.
+
 ## Getting started
 
 You need C++ compiler, Vulkan SDK and CMake installed before you can build this project.

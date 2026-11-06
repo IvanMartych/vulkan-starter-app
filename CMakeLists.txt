@@ -3,9 +3,11 @@ include(FetchContent)
 
 project(vulkan-starter-app LANGUAGES C CXX)
 
-add_executable(${PROJECT_NAME} source/main.cpp source/graphics_internal.cpp source/application.cpp)
+add_executable(${PROJECT_NAME} source/main.cpp source/graphics_internal.cpp source/application.cpp source/texture.cpp)
+target_include_directories(${PROJECT_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party)
 target_compile_definitions(${PROJECT_NAME} PRIVATE
     "SHADER_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/shaders\""
+    "TEXTURE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/assets/textures\""
 )
 
 if(LINUX)

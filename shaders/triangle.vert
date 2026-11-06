@@ -1,10 +1,10 @@
 #version 450
 
 layout(location = 0) in vec3 in_position;
-layout(location = 1) in vec3 in_color;
+layout(location = 1) in vec2 in_texcoord;
 layout(location = 2) in vec3 in_normal;
 
-layout(location = 0) out vec3 vertex_color;
+layout(location = 0) out vec2 vertex_texcoord;
 layout(location = 1) out vec3 vertex_normal;
 layout(location = 2) out vec3 vertex_world_position;
 
@@ -39,7 +39,7 @@ void main() {
 
     gl_Position = scene_uniforms.view_projection * world_position;
 
-    vertex_color = in_color * model_uniforms.base_color.rgb;
+    vertex_texcoord = in_texcoord;
 
     mat3 normal_matrix = transpose(
         inverse(mat3(model_uniforms.model))
